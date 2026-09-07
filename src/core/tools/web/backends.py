@@ -9,6 +9,7 @@ Backends:
 - ``alphaxiv`` — public alphaXiv paper search (keyless, papers; Python ≥ 3.12).
 - ``jina``     — Jina search ``s.jina.ai`` (keyless general web; ``JINA_API_KEY`` optional).
 - ``serper``   — Serper Google API (needs ``SERPER_API_KEY``).
+- ``serpbase`` — SerpBase Google SERP API (needs ``SERPBASE_API_KEY``).
 - ``exa``      — Exa REST API (needs ``EXA_API_KEY``).
 - ``endpoint`` — the legacy self-hosted BrowseComp-style HTTP endpoint.
 
@@ -28,7 +29,7 @@ from urllib.parse import quote
 import requests
 
 _HTTP_TIMEOUT = (5, 30)
-_KNOWN = ("alphaxiv", "jina", "serper", "exa", "exa-mcp", "endpoint")
+_KNOWN = ("alphaxiv", "jina", "serper", "serpbase", "exa", "exa-mcp", "endpoint")
 
 
 class SearchBackend(ABC):
@@ -117,6 +118,46 @@ class SerperBackend(_SyncBackend):
                 "snippets": o.get("snippet", ""),
             })
         return items
+
+
+class SerpBaseBackend(_SyncBackend):
+    """SerpBase Google SERP API (https://serpbase.dev) — needs an API key.
+
+    POST-only JSON contract with the key sent as ``X-API-Key``. The response
+    is an envelope: ``status`` is 0 on success and ``organic`` holds the
+    results (``position`` / ``title`` / ``link`` / ``snippet``). Unlike the
+    other HTTP backends this API returns HTTP 200 for business errors, so the
+    envelope is checked explicitly instead of relying on ``raise_for_status``.
+    """
+
+    name = "serpbase"
+
+    def __init__(self, *, api_key: str,
+                 endpoint: str = "https://api.serpbase.dev/google/search",
+                 timeout: tuple[int, int] = _HTTP_TIMEOUT):
+        self._api_key = api_key
+        self._url = endpoint
+        self._timeout = timeout
+
+    def _sync(self, query: str, max_results: int) -> list[dict]:
+        resp = requests.post(
+            self._url,
+            json={"q": query, "num": max_results},
+            headers={"X-API-Key": self._api_key, "Content-Type": "application/json"},
+            timeout=self._timeout,
+        )
+        resp.raise_for_status()
+        data = resp.json()
+        if data.get("status", 0) != 0:
+            raise RuntimeError(data.get("error") or f"serpbase search failed (status {data.get('status')})")
+        items: list[dict] = []
+        for o in data.get("organic", []) or []:
+            items.append({
+                "url": o.get("link", ""),
+                "title": o.get("title", ""),
+                "snippets": o.get("snippet", ""),
+            })
+        return items[:max_results]
 
 
 class ExaBackend(_SyncBackend):
@@ -358,6 +399,10 @@ def _serper_key(sc: Any) -> str | None:
     return getattr(sc, "serper_api_key", None) or os.environ.get("SERPER_API_KEY")
 
 
+def _serpbase_key(sc: Any) -> str | None:
+    return getattr(sc, "serpbase_api_key", None) or os.environ.get("SERPBASE_API_KEY")
+
+
 def resolve_backend_names(sc: Any) -> list[str]:
     """Ordered, de-duplicated list of usable backend names for ``sc``.
 
@@ -380,6 +425,8 @@ def resolve_backend_names(sc: Any) -> list[str]:
             continue
         if n == "serper" and not _serper_key(sc):
             continue
+        if n == "serpbase" and not _serpbase_key(sc):
+            continue
         if n == "exa" and not _exa_key(sc):
             continue
         # exa-mcp is keyless (the hosted server works without a key); an
@@ -398,6 +445,10 @@ def build_search_backends(sc: Any) -> list[SearchBackend]:
             out.append(JinaSearchBackend(api_key=getattr(sc, "jina_api_key", None)))
         elif n == "serper":
             out.append(SerperBackend(api_key=_serper_key(sc)))
+        elif n == "serpbase":
+            key = _serpbase_key(sc)
+            if key is not None:  # pragma: no cover - resolve_backend_names guards
+                out.append(SerpBaseBackend(api_key=key))
         elif n == "exa":
             out.append(ExaBackend(api_key=_exa_key(sc)))
         elif n == "exa-mcp":
