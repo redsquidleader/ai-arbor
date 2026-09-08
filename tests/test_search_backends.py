@@ -10,17 +10,18 @@ import asyncio
 import json
 
 import arbor.core.tools.web.backends as B
+from arbor.coordinator.config import SearchConfig
 from arbor.core.tools.web.backends import (
     ExaBackend,
     ExaMcpBackend,
     JinaSearchBackend,
+    SerpBaseBackend,
     SerperBackend,
     build_search_backends,
     resolve_backend_names,
 )
 from arbor.core.tools.web.factory import build_web_search_tool, build_web_visit_tool
 from arbor.core.tools.web.search import WebSearchTool
-from arbor.coordinator.config import SearchConfig
 
 
 class _Resp:
@@ -57,14 +58,16 @@ def test_resolve_explicit_list_keyless():
 def test_resolve_drops_keyless_missing_creds(monkeypatch):
     monkeypatch.delenv("SERPER_API_KEY", raising=False)
     monkeypatch.delenv("EXA_API_KEY", raising=False)
-    sc = SearchConfig(backends=["serper", "exa", "jina"])
-    # serper/exa dropped (no key), jina kept (keyless)
+    monkeypatch.delenv("SERPBASE_API_KEY", raising=False)
+    sc = SearchConfig(backends=["serper", "serpbase", "exa", "jina"])
+    # serper/serpbase/exa dropped (no key), jina kept (keyless)
     assert resolve_backend_names(sc) == ["jina"]
 
 
 def test_resolve_keeps_keyed_when_key_present():
-    sc = SearchConfig(backends=["serper", "exa"], serper_api_key="s", exa_api_key="e")
-    assert resolve_backend_names(sc) == ["serper", "exa"]
+    sc = SearchConfig(backends=["serper", "serpbase", "exa"],
+                      serper_api_key="s", serpbase_api_key="b", exa_api_key="e")
+    assert resolve_backend_names(sc) == ["serper", "serpbase", "exa"]
 
 
 def test_resolve_dedup_and_unknown_dropped():
@@ -99,6 +102,59 @@ def test_exa_backend_parses_results(monkeypatch):
     assert "Ann" in items[0]["snippets"]
 
 
+# ── SerpBase adapter ─────────────────────────────────────────────────────────
+
+def test_serpbase_backend_parses_organic(monkeypatch):
+    payload = {"status": 0, "organic": [
+        {"position": 1, "link": "https://a.com", "title": "A", "snippet": "sa"},
+        {"position": 2, "link": "https://b.com", "title": "B", "snippet": "sb"},
+    ]}
+    monkeypatch.setattr(B.requests, "post", lambda *a, **k: _Resp(payload))
+    items = asyncio.run(SerpBaseBackend(api_key="k").search("q", 5))
+    assert items == [
+        {"url": "https://a.com", "title": "A", "snippets": "sa"},
+        {"url": "https://b.com", "title": "B", "snippets": "sb"},
+    ]
+
+
+def test_serpbase_backend_truncates_to_max_results(monkeypatch):
+    payload = {"status": 0, "organic": [
+        {"position": i, "link": f"https://x{i}.com", "title": f"X{i}", "snippet": ""}
+        for i in range(1, 12)
+    ]}
+    monkeypatch.setattr(B.requests, "post", lambda *a, **k: _Resp(payload))
+    items = asyncio.run(SerpBaseBackend(api_key="k").search("q", 10))
+    assert len(items) == 10
+
+
+def test_serpbase_backend_error_envelope_raises(monkeypatch):
+    # HTTP 200 with a business error in the envelope (status != 0).
+    payload = {"status": 1, "error": "Invalid API key"}
+    monkeypatch.setattr(B.requests, "post", lambda *a, **k: _Resp(payload))
+    try:
+        asyncio.run(SerpBaseBackend(api_key="bad").search("q", 5))
+    except RuntimeError as exc:
+        assert "Invalid API key" in str(exc)
+    else:
+        raise AssertionError("expected RuntimeError for error envelope")
+
+
+def test_serpbase_backend_uses_post_x_api_key(monkeypatch):
+    captured = {}
+
+    def _fake_post(url, **kwargs):
+        captured["url"] = url
+        captured["json"] = kwargs.get("json")
+        captured["headers"] = kwargs.get("headers")
+        return _Resp({"status": 0, "organic": []})
+
+    monkeypatch.setattr(B.requests, "post", _fake_post)
+    asyncio.run(SerpBaseBackend(api_key="secret").search("hello", 5))
+    assert captured["url"] == "https://api.serpbase.dev/google/search"
+    assert captured["json"] == {"q": "hello", "num": 5}
+    assert captured["headers"]["X-API-Key"] == "secret"
+
+
 def test_jina_search_backend_parses(monkeypatch):
     payload = {"data": [
         {"url": "https://j.com", "title": "J", "description": "desc"},
@@ -111,11 +167,11 @@ def test_jina_search_backend_parses(monkeypatch):
 # ── build_search_backends ────────────────────────────────────────────────────
 
 def test_build_search_backends_types():
-    sc = SearchConfig(backends=["alphaxiv", "jina", "serper", "exa"],
-                      serper_api_key="s", exa_api_key="e")
+    sc = SearchConfig(backends=["alphaxiv", "jina", "serper", "serpbase", "exa"],
+                      serper_api_key="s", serpbase_api_key="b", exa_api_key="e")
     backends = build_search_backends(sc)
     names = [b.name for b in backends]
-    assert names == ["alphaxiv", "jina", "serper", "exa"]
+    assert names == ["alphaxiv", "jina", "serper", "serpbase", "exa"]
 
 
 # ── WebSearchTool multi-backend fan-out + merge ──────────────────────────────

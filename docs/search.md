@@ -90,6 +90,7 @@ the same paper from two backends merges to one).
 | `alphaxiv` | no | arXiv / alphaXiv papers (Python ≥ 3.12) |
 | `jina` | no (optional `JINA_API_KEY` raises limits) | general web (s.jina.ai) |
 | `serper` | `SERPER_API_KEY` | Google results (serper.dev) |
+| `serpbase` | `SERPBASE_API_KEY` | Google SERP (serpbase.dev, POST + X-API-Key) |
 | `exa` | `EXA_API_KEY` | neural web search (exa.ai REST) |
 | `exa-mcp` | no (optional `EXA_API_KEY` raises limits) | Exa via its hosted MCP server |
 | `endpoint` | optional | self-hosted `web_search_endpoint` (BrowseComp-style) |
@@ -99,8 +100,9 @@ A backend whose key is missing is **silently skipped**, so a list like
 `SERPER_API_KEY` is set. The fully keyless default is
 **`backends: [alphaxiv, jina]`** — papers + general web, zero setup.
 
-Keys go in the config file (`serper_api_key` / `exa_api_key` / `jina_api_key`)
-or the matching env vars (`SERPER_API_KEY`, `EXA_API_KEY`, `JINA_API_KEY`).
+Keys go in the config file (`serper_api_key` / `serpbase_api_key` / `exa_api_key`
+/ `jina_api_key`) or the matching env vars (`SERPER_API_KEY`,
+`SERPBASE_API_KEY`, `EXA_API_KEY`, `JINA_API_KEY`).
 
 !!! note "Exa via MCP"
     The `exa-mcp` backend calls Exa's hosted MCP server
